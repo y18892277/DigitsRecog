@@ -168,19 +168,40 @@ class ImageRecognizerApp:
             # 使用 CHAIN_APPROX_SIMPLE 压缩轮廓点，节省内存，对面积计算无影响
             noise_contours, _ = cv2.findContours(image_for_noise_filtering, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             
-            max_noise_area_threshold = 15 # 定义噪点的最大面积阈值，小于此面积的白色区域将被移除。用户之前改为15导致数字断裂，现调整为5以保护数字完整性
+            max_noise_area_threshold = 20 # 定义噪点的最大面积阈值，小于此面积的白色区域将被移除。用户之前改为15导致数字断裂，现调整为5以保护数字完整性
             num_noise_removed = 0
             if noise_contours:
                 for c in noise_contours:
                     area = cv2.contourArea(c)
                     if area < max_noise_area_threshold and area > 0: # 面积大于0确保是有效轮廓
-                        # 将小面积轮廓填充为黑色 (0)
                         cv2.drawContours(image_for_noise_filtering, [c], -1, 0, -1)
                         num_noise_removed += 1
             print(f"从5b图像中移除了 {num_noise_removed} 个面积小于 {max_noise_area_threshold} 的噪点。")
             cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5c_contour_filtered_b{blockSize}_c{C_val}_k{kernel_open_size[0]}_T{max_noise_area_threshold}.png"), image_for_noise_filtering)
             
-            processed_binary_for_contours = image_for_noise_filtering # 更新后续轮廓检测的输入
+            # 新增步骤5d：从5c的结果中仅保留最大的轮廓（假定为数字）
+            # 我们需要复制 image_for_noise_filtering 因为 findContours 会修改源图像
+            contours_in_5c, _ = cv2.findContours(image_for_noise_filtering.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            image_with_only_digit = np.zeros_like(image_for_noise_filtering) # 创建一个同样大小的黑色背景图像
+            
+            if contours_in_5c:
+                if len(contours_in_5c) > 0:
+                    largest_contour_from_5c = max(contours_in_5c, key=cv2.contourArea)
+                    # 新方法：使用位运算保留最大轮廓的内部结构（如孔洞）
+                    # 1. 创建一个只包含最大轮廓（实心）的掩码
+                    mask_for_largest = np.zeros_like(image_for_noise_filtering)
+                    cv2.drawContours(mask_for_largest, [largest_contour_from_5c], -1, 255, -1) # -1表示填充
+                    
+                    # 2. 使用此掩码从 image_for_noise_filtering (5c的输出) 中提取原始像素
+                    image_with_only_digit = cv2.bitwise_and(image_for_noise_filtering, image_for_noise_filtering, mask=mask_for_largest)
+                    print(f"步骤5d：已从5c的输出中分离出最大轮廓（保留内部结构）。")
+                else:
+                    print(f"步骤5d警告：在5c的输出中未找到轮廓可供分离（contours_in_5c列表为空）。")    
+            else:
+                print(f"步骤5d警告：在5c的输出中未找到轮廓可供分离（contours_in_5c为None）。")
+
+            cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5d_isolated_digit_from_5c_b{blockSize}_c{C_val}_k{kernel_open_size[0]}_T{max_noise_area_threshold}.png"), image_with_only_digit)
+            processed_binary_for_contours = image_with_only_digit # 更新后续轮廓检测的输入
 
             contours, _ = cv2.findContours(processed_binary_for_contours.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
@@ -224,10 +245,26 @@ class ImageRecognizerApp:
                     scaled_digit_roi_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_LINEAR) # 使用清理后的ROI进行缩放
                     cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7_scaled_roi_b{blockSize}_c{C_val}_INTER_LINEAR.png"), scaled_digit_roi_cv)
 
+                    # 新增：对缩放后的ROI进行闭运算，以修补可能的断裂
+                    # scaled_digit_roi_cv 通常是 0-255 的灰度图，但其内容主要是二值的
+                    # 为了确保形态学操作效果，可以先将其转为严格的二值图像 (0 或 255)
+                    # 不过，如果其已经是近似二值（例如，背景是0，前景是255），直接操作通常也可以
+                    # 这里我们假设它可以直接用于形态学操作，如果效果不佳，再考虑强制二值化
+                    repair_kernel_size = (2,2) # 使用较小的核进行修补
+                    kernel_for_repair = cv2.getStructuringElement(cv2.MORPH_RECT, repair_kernel_size)
+                    
+                    # 确保 scaled_digit_roi_cv 不为空且为2D图像
+                    if scaled_digit_roi_cv.size > 0 and scaled_digit_roi_cv.ndim == 2:
+                        repaired_scaled_roi_cv = cv2.morphologyEx(scaled_digit_roi_cv, cv2.MORPH_CLOSE, kernel_for_repair, iterations=1)
+                        cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7a_repaired_scaled_roi_b{blockSize}_c{C_val}_k{repair_kernel_size[0]}.png"), repaired_scaled_roi_cv)
+                    else:
+                        print(f"警告: 缩放后的ROI为空或格式不正确，跳过ROI修复。ROI shape: {scaled_digit_roi_cv.shape}")
+                        repaired_scaled_roi_cv = scaled_digit_roi_cv # 如果有问题，则使用原始缩放ROI
+
                     paste_x = (IMAGE_SIZE - new_w_roi) // 2
                     paste_y = (IMAGE_SIZE - new_h_roi) // 2
                     
-                    final_mnist_like_image_np[paste_y : paste_y + new_h_roi, paste_x : paste_x + new_w_roi] = scaled_digit_roi_cv / 255.0
+                    final_mnist_like_image_np[paste_y : paste_y + new_h_roi, paste_x : paste_x + new_w_roi] = repaired_scaled_roi_cv / 255.0 # 使用修复后的ROI
             else:
                 print("警告: OpenCV未能找到任何轮廓。")
 
