@@ -154,12 +154,33 @@ class ImageRecognizerApp:
             closed_cv_hdbz = cv2.morphologyEx(binary_cv_hdbz, cv2.MORPH_CLOSE, kernel, iterations=1)
             cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5a_morph_close_b{blockSize}_c{C_val}_k{kernel_size_morph[0]}.png"), closed_cv_hdbz)
             
-            # 开运算步骤被注释掉或移除
-            # opened_cv_hdbz = cv2.morphologyEx(closed_cv_hdbz, cv2.MORPH_OPEN, kernel, iterations=1)
-            # cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5b_morph_open_b{blockSize}_c{C_val}_k{kernel_size_morph[0]}.png"), opened_cv_hdbz)
+            # 新增：进行开运算以清理背景噪点 (在之前的闭运算之后)
+            # 使用与闭运算相同的核大小作为初始尝试，可以根据效果调整
+            kernel_open_size = (2,2) # 原为 kernel_size_morph (3,3)，调整为 (2,2) 以减少对数字线条的破坏
+            kernel_for_opening = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_open_size)
+            # iterations=1 通常足够，也可调整
+            opened_after_close_cv = cv2.morphologyEx(closed_cv_hdbz, cv2.MORPH_OPEN, kernel_for_opening, iterations=1)
+            cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5b_opened_after_close_b{blockSize}_c{C_val}_k{kernel_open_size[0]}.png"), opened_after_close_cv)
+
+            # 新增步骤：通过轮廓面积进一步清理背景白色小噪点
+            image_for_noise_filtering = opened_after_close_cv.copy()
+            # 使用 RETR_LIST 获取所有轮廓，包括嵌套的，以确保捕捉所有潜在的小噪点
+            # 使用 CHAIN_APPROX_SIMPLE 压缩轮廓点，节省内存，对面积计算无影响
+            noise_contours, _ = cv2.findContours(image_for_noise_filtering, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             
-            # 直接使用闭运算的结果作为后续轮廓检测的输入
-            processed_binary_for_contours = closed_cv_hdbz
+            max_noise_area_threshold = 15 # 定义噪点的最大面积阈值，小于此面积的白色区域将被移除。用户之前改为15导致数字断裂，现调整为5以保护数字完整性
+            num_noise_removed = 0
+            if noise_contours:
+                for c in noise_contours:
+                    area = cv2.contourArea(c)
+                    if area < max_noise_area_threshold and area > 0: # 面积大于0确保是有效轮廓
+                        # 将小面积轮廓填充为黑色 (0)
+                        cv2.drawContours(image_for_noise_filtering, [c], -1, 0, -1)
+                        num_noise_removed += 1
+            print(f"从5b图像中移除了 {num_noise_removed} 个面积小于 {max_noise_area_threshold} 的噪点。")
+            cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5c_contour_filtered_b{blockSize}_c{C_val}_k{kernel_open_size[0]}_T{max_noise_area_threshold}.png"), image_for_noise_filtering)
+            
+            processed_binary_for_contours = image_for_noise_filtering # 更新后续轮廓检测的输入
 
             contours, _ = cv2.findContours(processed_binary_for_contours.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
@@ -171,12 +192,24 @@ class ImageRecognizerApp:
                 digit_roi_cv = processed_binary_for_contours[y:y+h, x:x+w]
                 cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"6_cropped_roi_b{blockSize}_c{C_val}.png"), digit_roi_cv)
                 
+                # 新增：对裁剪出的ROI进行一次额外的开运算，以清理附着在数字上的小噪点
+                # 使用一个较小的核，例如 (2,2)，以避免过度侵蚀数字本身
+                kernel_roi_open_size = (3,3)
+                kernel_for_roi_opening = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_roi_open_size)
+                # 确保 digit_roi_cv 不为空，并且是二值图像 (虽然它应该是)
+                if digit_roi_cv.size > 0 and digit_roi_cv.ndim == 2:
+                    cleaned_digit_roi_cv = cv2.morphologyEx(digit_roi_cv, cv2.MORPH_OPEN, kernel_for_roi_opening, iterations=1)
+                    cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"6a_roi_opened_b{blockSize}_c{C_val}_k{kernel_roi_open_size[0]}.png"), cleaned_digit_roi_cv)
+                else:
+                    print(f"警告:裁剪后的ROI为空或格式不正确，跳过ROI开运算。ROI shape: {digit_roi_cv.shape}")
+                    cleaned_digit_roi_cv = digit_roi_cv # 如果有问题，则使用原始ROI
+
                 padding = 4 
                 max_content_dim = IMAGE_SIZE - 2 * padding
                 
-                roi_h, roi_w = digit_roi_cv.shape[:2]
+                roi_h, roi_w = cleaned_digit_roi_cv.shape[:2] # 使用清理后的ROI的尺寸
                 if roi_w == 0 or roi_h == 0:
-                    print("警告: 裁剪出的ROI尺寸为零。")
+                    print("警告: 清理后的ROI尺寸为零。")
                 else:
                     if roi_w > roi_h:
                         new_w_roi = max_content_dim
@@ -188,7 +221,7 @@ class ImageRecognizerApp:
                     new_w_roi = max(1, new_w_roi)
                     new_h_roi = max(1, new_h_roi)
 
-                    scaled_digit_roi_cv = cv2.resize(digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_LINEAR)
+                    scaled_digit_roi_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_LINEAR) # 使用清理后的ROI进行缩放
                     cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7_scaled_roi_b{blockSize}_c{C_val}_INTER_LINEAR.png"), scaled_digit_roi_cv)
 
                     paste_x = (IMAGE_SIZE - new_w_roi) // 2
