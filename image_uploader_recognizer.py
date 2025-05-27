@@ -153,10 +153,13 @@ class ImageRecognizerApp:
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size_morph)
             closed_cv_hdbz = cv2.morphologyEx(binary_cv_hdbz, cv2.MORPH_CLOSE, kernel, iterations=1)
             cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5a_morph_close_b{blockSize}_c{C_val}_k{kernel_size_morph[0]}.png"), closed_cv_hdbz)
-            opened_cv_hdbz = cv2.morphologyEx(closed_cv_hdbz, cv2.MORPH_OPEN, kernel, iterations=1)
-            cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5b_morph_open_b{blockSize}_c{C_val}_k{kernel_size_morph[0]}.png"), opened_cv_hdbz)
             
-            processed_binary_for_contours = opened_cv_hdbz
+            # 开运算步骤被注释掉或移除
+            # opened_cv_hdbz = cv2.morphologyEx(closed_cv_hdbz, cv2.MORPH_OPEN, kernel, iterations=1)
+            # cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5b_morph_open_b{blockSize}_c{C_val}_k{kernel_size_morph[0]}.png"), opened_cv_hdbz)
+            
+            # 直接使用闭运算的结果作为后续轮廓检测的输入
+            processed_binary_for_contours = closed_cv_hdbz
 
             contours, _ = cv2.findContours(processed_binary_for_contours.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
@@ -185,8 +188,8 @@ class ImageRecognizerApp:
                     new_w_roi = max(1, new_w_roi)
                     new_h_roi = max(1, new_h_roi)
 
-                    scaled_digit_roi_cv = cv2.resize(digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_AREA)
-                    cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7_scaled_roi_b{blockSize}_c{C_val}.png"), scaled_digit_roi_cv)
+                    scaled_digit_roi_cv = cv2.resize(digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_LINEAR)
+                    cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7_scaled_roi_b{blockSize}_c{C_val}_INTER_LINEAR.png"), scaled_digit_roi_cv)
 
                     paste_x = (IMAGE_SIZE - new_w_roi) // 2
                     paste_y = (IMAGE_SIZE - new_h_roi) // 2
