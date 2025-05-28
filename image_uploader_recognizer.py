@@ -153,7 +153,7 @@ class ImageRecognizerApp:
             image_for_4b_filtering = binary_cv_hdbz.copy()
             contours_step4, _ = cv2.findContours(image_for_4b_filtering, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             
-            max_white_noise_area_after_4 = 20 # 定义噪点的最大面积阈值 (白色区域)
+            max_white_noise_area_after_4 = 50 # 定义噪点的最大面积阈值 (白色区域)
             num_noise_removed_4b = 0
             if contours_step4:
                 for c in contours_step4:
