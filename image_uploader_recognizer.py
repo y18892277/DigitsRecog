@@ -148,7 +148,32 @@ class ImageRecognizerApp:
             binary_cv_hdbz = cv2.adaptiveThreshold(blurred_cv, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, \
                                                   cv2.THRESH_BINARY_INV, blockSize, C_val)
             cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"4_adaptive_gaussian_inv_b{blockSize}_c{C_val}_HDBZ.png"), binary_cv_hdbz)
+
+            # 新增步骤4b：通过轮廓面积分析去除步骤4输出中的微小白色噪点
+            image_for_4b_filtering = binary_cv_hdbz.copy()
+            contours_step4, _ = cv2.findContours(image_for_4b_filtering, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             
+            max_white_noise_area_after_4 = 20 # 定义噪点的最大面积阈值 (白色区域)
+            num_noise_removed_4b = 0
+            if contours_step4:
+                for c in contours_step4:
+                    area = cv2.contourArea(c)
+                    if area < max_white_noise_area_after_4 and area > 0: # 确保是有效的小面积轮廓
+                        # 在副本上用黑色填充掉这些小轮廓
+                        cv2.drawContours(image_for_4b_filtering, [c], -1, 0, -1) 
+                        num_noise_removed_4b += 1
+            
+            if num_noise_removed_4b > 0:
+                print(f"步骤4b：从步骤4的输出中移除了 {num_noise_removed_4b} 个面积小于 {max_white_noise_area_after_4} 的白色噪点区域。")
+                binary_cv_hdbz = image_for_4b_filtering # 更新主图像变量
+                cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"4b_white_noise_filtered_T{max_white_noise_area_after_4}_after_4.png"), binary_cv_hdbz)
+            else:
+                print(f"步骤4b：在步骤4的输出中未找到或未移除任何面积小于 {max_white_noise_area_after_4} 的白色噪点区域。")
+                # 如果没有移除任何东西，可以选择不保存4b的图像，或者照常保存（它将和4一样）
+                # 为了调试明确，即使没有改动也保存，可以看出此步骤被执行了
+                cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"4b_white_noise_filtered_T{max_white_noise_area_after_4}_after_4_no_change.png"), binary_cv_hdbz)
+
+            # 原步骤5a (闭运算) 将作用于经过4b处理（或未处理）的binary_cv_hdbz
             kernel_size_morph = (3,3) 
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size_morph)
             closed_cv_hdbz = cv2.morphologyEx(binary_cv_hdbz, cv2.MORPH_CLOSE, kernel, iterations=1)
@@ -179,103 +204,134 @@ class ImageRecognizerApp:
             print(f"从5b图像中移除了 {num_noise_removed} 个面积小于 {max_noise_area_threshold} 的噪点。")
             cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5c_contour_filtered_b{blockSize}_c{C_val}_k{kernel_open_size[0]}_T{max_noise_area_threshold}.png"), image_for_noise_filtering)
             
-            # 新增步骤5d：从5c的结果中仅保留最大的轮廓（假定为数字）
-            # 我们需要复制 image_for_noise_filtering 因为 findContours 会修改源图像
-            contours_in_5c, _ = cv2.findContours(image_for_noise_filtering.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            image_with_only_digit = np.zeros_like(image_for_noise_filtering) # 创建一个同样大小的黑色背景图像
-            
-            if contours_in_5c:
-                if len(contours_in_5c) > 0:
-                    largest_contour_from_5c = max(contours_in_5c, key=cv2.contourArea)
-                    # 新方法：使用位运算保留最大轮廓的内部结构（如孔洞）
-                    # 1. 创建一个只包含最大轮廓（实心）的掩码
-                    mask_for_largest = np.zeros_like(image_for_noise_filtering)
-                    cv2.drawContours(mask_for_largest, [largest_contour_from_5c], -1, 255, -1) # -1表示填充
-                    
-                    # 2. 使用此掩码从 image_for_noise_filtering (5c的输出) 中提取原始像素
-                    image_with_only_digit = cv2.bitwise_and(image_for_noise_filtering, image_for_noise_filtering, mask=mask_for_largest)
-                    print(f"步骤5d：已从5c的输出中分离出最大轮廓（保留内部结构）。")
-                else:
-                    print(f"步骤5d警告：在5c的输出中未找到轮廓可供分离（contours_in_5c列表为空）。")    
-            else:
-                print(f"步骤5d警告：在5c的输出中未找到轮廓可供分离（contours_in_5c为None）。")
+            # --- 开始新的多数字识别逻辑 (基于5c的输出) ---
+            # image_for_noise_filtering (5c的输出) 是我们寻找多个轮廓的基础
+            all_potential_digit_contours, _ = cv2.findContours(image_for_noise_filtering.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"5d_isolated_digit_from_5c_b{blockSize}_c{C_val}_k{kernel_open_size[0]}_T{max_noise_area_threshold}.png"), image_with_only_digit)
-            processed_binary_for_contours = image_with_only_digit # 更新后续轮廓检测的输入
+            recognized_digits_list = []
+            debug_candidates_display_img = None # 用于存储带有候选框的预览图像 (M5e)
 
-            contours, _ = cv2.findContours(processed_binary_for_contours.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            final_mnist_like_image_np = np.zeros((IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32) 
-
-            if contours:
-                contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(contour)
-                digit_roi_cv = processed_binary_for_contours[y:y+h, x:x+w]
-                cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"6_cropped_roi_b{blockSize}_c{C_val}.png"), digit_roi_cv)
+            if all_potential_digit_contours and len(all_potential_digit_contours) > 0:
+                min_digit_area = 25  # 定义一个轮廓被视为可能数字的最小面积
                 
-                # 新增：对裁剪出的ROI进行一次额外的开运算，以清理附着在数字上的小噪点
-                # 使用一个较小的核，例如 (2,2)，以避免过度侵蚀数字本身
-                kernel_roi_open_size = (3,3)
-                kernel_for_roi_opening = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_roi_open_size)
-                # 确保 digit_roi_cv 不为空，并且是二值图像 (虽然它应该是)
-                if digit_roi_cv.size > 0 and digit_roi_cv.ndim == 2:
-                    cleaned_digit_roi_cv = cv2.morphologyEx(digit_roi_cv, cv2.MORPH_OPEN, kernel_for_roi_opening, iterations=1)
-                    cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"6a_roi_opened_b{blockSize}_c{C_val}_k{kernel_roi_open_size[0]}.png"), cleaned_digit_roi_cv)
-                else:
-                    print(f"警告:裁剪后的ROI为空或格式不正确，跳过ROI开运算。ROI shape: {digit_roi_cv.shape}")
-                    cleaned_digit_roi_cv = digit_roi_cv # 如果有问题，则使用原始ROI
-
-                padding = 4 
-                max_content_dim = IMAGE_SIZE - 2 * padding
+                candidate_contours = []
+                for c_contour in all_potential_digit_contours:
+                    area = cv2.contourArea(c_contour)
+                    if area >= min_digit_area:
+                        candidate_contours.append(c_contour)
                 
-                roi_h, roi_w = cleaned_digit_roi_cv.shape[:2] # 使用清理后的ROI的尺寸
-                if roi_w == 0 or roi_h == 0:
-                    print("警告: 清理后的ROI尺寸为零。")
+                if not candidate_contours:
+                    print("多数字识别：在5c之后未找到符合面积条件的候选数字轮廓。")
+                    self.result_label.config(text="?")
+                    self.clear_processed_preview()
                 else:
-                    if roi_w > roi_h:
-                        new_w_roi = max_content_dim
-                        new_h_roi = int(roi_h * (new_w_roi / roi_w))
-                    else:
-                        new_h_roi = max_content_dim
-                        new_w_roi = int(roi_w * (new_h_roi / roi_h))
+                    # 按x坐标对候选轮廓排序（从左到右）
+                    candidate_contours.sort(key=lambda c_sort: cv2.boundingRect(c_sort)[0])
                     
-                    new_w_roi = max(1, new_w_roi)
-                    new_h_roi = max(1, new_h_roi)
-
-                    scaled_digit_roi_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_NEAREST) # 使用清理后的ROI进行缩放
-                    cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7_scaled_roi_b{blockSize}_c{C_val}_INTER_NEAREST.png"), scaled_digit_roi_cv)
-
-                    paste_x = (IMAGE_SIZE - new_w_roi) // 2
-                    paste_y = (IMAGE_SIZE - new_h_roi) // 2
+                    # 创建一个彩色图像用于绘制候选框 (M5e)
+                    debug_candidates_display_img = cv2.cvtColor(image_for_noise_filtering.copy(), cv2.COLOR_GRAY2BGR)
                     
-                    final_mnist_like_image_np[paste_y : paste_y + new_h_roi, paste_x : paste_x + new_w_roi] = scaled_digit_roi_cv / 255.0 # 直接使用缩放后的ROI，不再使用修复后的ROI
-            else:
-                print("警告: OpenCV未能找到任何轮廓。")
+                    digit_index = 0
+                    for contour_item in candidate_contours:
+                        # 为每个数字重置28x28的画布
+                        final_mnist_like_image_np = np.zeros((IMAGE_SIZE, IMAGE_SIZE), dtype=np.float32) 
 
-            Image.fromarray((final_mnist_like_image_np * 255).astype(np.uint8)).save(os.path.join(DEBUG_IMAGE_DIR, f"9_final_for_model_b{blockSize}_c{C_val}.png"))
+                        x, y, w, h = cv2.boundingRect(contour_item)
+                        
+                        # 在 debug_candidates_display_img 上绘制绿色候选框和索引
+                        cv2.rectangle(debug_candidates_display_img, (x, y), (x + w, y + h), (0, 255, 0), 1) 
+                        cv2.putText(debug_candidates_display_img, str(digit_index), (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0),1)
 
-            try:
-                processed_display_array_gui = (final_mnist_like_image_np * 255).astype(np.uint8)
-                self.processed_pil_to_show = Image.fromarray(processed_display_array_gui, mode='L')
-                display_scale_factor = self.processed_image_display_size // IMAGE_SIZE
-                scaled_width_gui = IMAGE_SIZE * display_scale_factor
-                scaled_height_gui = IMAGE_SIZE * display_scale_factor
-                self.processed_pil_to_show_resized = self.processed_pil_to_show.resize(
-                    (scaled_width_gui, scaled_height_gui), Image.Resampling.NEAREST
-                )
-                self.processed_tk_image_to_show = ImageTk.PhotoImage(self.processed_pil_to_show_resized)
-                self.processed_image_label.config(image=self.processed_tk_image_to_show)
-                self.processed_image_label.image = self.processed_tk_image_to_show
-            except Exception as e_display_processed:
-                print(f"显示OpenCV预处理后图像时出错: {e_display_processed}")
+                        # M6: 从 image_for_noise_filtering (5c的输出) 裁剪ROI
+                        digit_roi_cv = image_for_noise_filtering[y:y+h, x:x+w]
+                        cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M6_cropped_roi_digit{digit_index}_b{blockSize}_c{C_val}_T{max_noise_area_threshold}.png"), digit_roi_cv)
+                        
+                        # M6a: 对裁剪出的ROI进行开运算清理 (使用(3,3)核，同用户当前单数字逻辑的6a)
+                        cleaned_digit_roi_cv = digit_roi_cv # 默认值，以防ROI为空
+                        if digit_roi_cv.size > 0 and digit_roi_cv.ndim == 2:
+                            kernel_roi_open_size = (3,3) 
+                            kernel_for_roi_opening = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_roi_open_size)
+                            cleaned_digit_roi_cv = cv2.morphologyEx(digit_roi_cv, cv2.MORPH_OPEN, kernel_for_roi_opening, iterations=1)
+                            cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M6a_roi_opened_digit{digit_index}_k{kernel_roi_open_size[0]}_T{max_noise_area_threshold}.png"), cleaned_digit_roi_cv)
+                        else:
+                            print(f"警告: 数字 {digit_index} 的裁剪ROI为空或格式不正确，跳过ROI开运算。 ROI shape: {digit_roi_cv.shape}")
+                            # 如果ROI有问题，后续步骤使用原始ROI或可能出错，这里简单跳过此数字的进一步处理
+                            if digit_roi_cv.size == 0: 
+                                print(f"数字 {digit_index} ROI为空，无法处理，跳过。")
+                                digit_index +=1
+                                continue
+
+
+                        # M7: 缩放ROI (同用户当前单数字逻辑的7)
+                        padding = 4 
+                        max_content_dim = IMAGE_SIZE - 2 * padding
+                        roi_h, roi_w = cleaned_digit_roi_cv.shape[:2]
+
+                        if roi_w == 0 or roi_h == 0:
+                            print(f"警告: 数字 {digit_index} 清理后的ROI尺寸为零，跳过此数字。")
+                            digit_index +=1
+                            continue 
+                        
+                        if roi_w > roi_h:
+                            new_w_roi = max_content_dim
+                            new_h_roi = int(roi_h * (new_w_roi / roi_w))
+                        else:
+                            new_h_roi = max_content_dim
+                            new_w_roi = int(roi_w * (new_h_roi / roi_h))
+                        
+                        new_w_roi = max(1, new_w_roi) # 确保尺寸至少为1
+                        new_h_roi = max(1, new_h_roi) # 确保尺寸至少为1
+
+                        scaled_digit_roi_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_NEAREST)
+                        cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M7_scaled_roi_digit{digit_index}_INTER_NEAREST_T{max_noise_area_threshold}.png"), scaled_digit_roi_cv)
+                        
+                        # M9: 准备模型输入 (同用户当前单数字逻辑的9)
+                        paste_x = (IMAGE_SIZE - new_w_roi) // 2
+                        paste_y = (IMAGE_SIZE - new_h_roi) // 2
+                        final_mnist_like_image_np[paste_y : paste_y + new_h_roi, paste_x : paste_x + new_w_roi] = scaled_digit_roi_cv / 255.0
+                        
+                        Image.fromarray((final_mnist_like_image_np * 255).astype(np.uint8)).save(os.path.join(DEBUG_IMAGE_DIR, f"M9_final_for_model_digit{digit_index}_T{max_noise_area_threshold}.png"))
+
+                        # 为当前数字进行预测
+                        img_to_predict = final_mnist_like_image_np.reshape(1, IMAGE_SIZE, IMAGE_SIZE, 1)
+                        prediction_vector = model.predict(img_to_predict)
+                        predicted_digit = np.argmax(prediction_vector)
+                        recognized_digits_list.append(str(predicted_digit))
+                        print(f"识别到的数字 {digit_index} (轮廓基于5c) 预测为: {predicted_digit}")
+                        
+                        digit_index += 1
+
+                    if recognized_digits_list:
+                        self.result_label.config(text="".join(recognized_digits_list))
+                        print(f"图片 '{filepath}' (OpenCV 多数字识别, 基于5c) 最终识别序列: {''.join(recognized_digits_list)}")
+                    else: # candidate_contours非空但recognized_digits_list为空 (所有候选都无法处理)
+                         self.result_label.config(text="?")
+                         print("多数字识别：有候选轮廓，但未能成功处理和识别任何数字。")
+                         # self.clear_processed_preview() # 保持显示M5e图
+
+                    # 保存带有所有候选框的图像 (M5e)
+                    if debug_candidates_display_img is not None:
+                         cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M5e_candidate_digits_on_5c_b{blockSize}_c{C_val}_T{max_noise_area_threshold}.png"), debug_candidates_display_img)
+            
+            else: # 如果在5c的输出中未找到任何初始轮廓 (all_potential_digit_contours is empty or None)
+                print("多数字识别：在5c的输出中未找到任何初始轮廓。")
+                self.result_label.config(text="?")
                 self.clear_processed_preview()
-            
-            img_to_predict = final_mnist_like_image_np.reshape(1, IMAGE_SIZE, IMAGE_SIZE, 1)
 
-            prediction = model.predict(img_to_predict)
-            predicted_digit = np.argmax(prediction)
-            self.result_label.config(text=str(predicted_digit))
-            print(f"图片 '{filepath}' (OpenCV b{blockSize}_c{C_val})预测结果: {predicted_digit}, 原始预测向量: {prediction}")
+            # 更新 "预处理后预览" 窗口，显示带有候选框的5c图像 (M5e, 如果生成了)
+            if debug_candidates_display_img is not None:
+                try:
+                    processed_display_pil = Image.fromarray(cv2.cvtColor(debug_candidates_display_img, cv2.COLOR_BGR2RGB))
+                    processed_display_pil.thumbnail((self.processed_image_display_size, self.processed_image_display_size), Image.Resampling.LANCZOS)
+                    self.processed_tk_image_to_show = ImageTk.PhotoImage(processed_display_pil)
+                    self.processed_image_label.config(image=self.processed_tk_image_to_show)
+                    self.processed_image_label.image = self.processed_tk_image_to_show
+                except Exception as e_display_multi:
+                    print(f"在UI中显示多数字候选框图像时出错: {e_display_multi}")
+                    self.clear_processed_preview()
+            else: 
+                self.clear_processed_preview()
+            # --- 结束新的多数字识别逻辑 ---
 
         except FileNotFoundError:
             self.result_label.config(text="ERR")
