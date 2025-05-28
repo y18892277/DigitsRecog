@@ -1,15 +1,35 @@
 import tensorflow as tf
 import tensorflow.keras as keras
 from tensorflow.keras import Sequential
-from tensorflow.keras.layers import Flatten, Dense, Conv2D, MaxPooling2D, Dropout, MaxPool2D
+from tensorflow.keras.layers import Flatten, Dense, Conv2D, MaxPooling2D, Dropout, MaxPool2D, BatchNormalization, Activation
 from tensorflow.keras.datasets import mnist
 from tensorflow.keras import backend as K
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping
 import json
+
+# GPU 检测与内存按需增长设置
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        # 设置TensorFlow只在需要时申请GPU显存
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        print(f"检测到 {len(gpus)} 个物理GPU, 配置了 {len(logical_gpus)} 个逻辑GPU.")
+        print("TensorFlow 将会使用 GPU 进行训练!")
+    except RuntimeError as e:
+        # 显存增长必须在GPU初始化之前设置
+        print(f"GPU内存按需增长设置失败: {e}")
+        print("程序仍会尝试使用GPU，但如果遇到显存问题，请注意。")
+else:
+    print("未检测到兼容的GPU，TensorFlow 将使用 CPU 进行训练。")
+    print("如果希望使用GPU，请确保CUDA和cuDNN已正确安装并与TensorFlow版本兼容。")
 
 
 batch_size = 128
 num_classes = 10
-epochs = 10
+epochs = 30
 
 # input image dimensions
 img_rows, img_cols = 28, 28
@@ -40,30 +60,68 @@ print(input_shape)
 
 # 构建网络
 model = Sequential()
-# 第一个卷积层，32个卷积核，大小５x5，卷积模式SAME,激活函数relu,输入张量的大小
-model.add(Conv2D(filters=32, kernel_size=(5, 5), padding='Same', activation='relu',
-                 input_shape=(28, 28, 1)))
-model.add(Conv2D(filters=32, kernel_size=(5, 5), padding='Same', activation='relu'))
-# 池化层,池化核大小２x2
+
+# 第一个卷积层块
+model.add(Conv2D(filters=32, kernel_size=(5, 5), padding='Same', input_shape=input_shape))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(Conv2D(filters=32, kernel_size=(5, 5), padding='Same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
 model.add(MaxPool2D(pool_size=(2, 2)))
-# 随机丢弃四分之一的网络连接，防止过拟合
 model.add(Dropout(0.25))
-model.add(Conv2D(filters=64, kernel_size=(3, 3), padding='Same', activation='relu'))
-model.add(Conv2D(filters=64, kernel_size=(3, 3), padding='Same', activation='relu'))
+
+# 第二个卷积层块
+model.add(Conv2D(filters=64, kernel_size=(3, 3), padding='Same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
+model.add(Conv2D(filters=64, kernel_size=(3, 3), padding='Same'))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
 model.add(MaxPool2D(pool_size=(2, 2), strides=(2, 2)))
 model.add(Dropout(0.25))
-# 全连接层,展开操作，
+
+# 全连接层块
 model.add(Flatten())
-# 添加隐藏层神经元的数量和激活函数
-model.add(Dense(256, activation='relu'))
+model.add(Dense(256))
+model.add(BatchNormalization())
+model.add(Activation('relu'))
 model.add(Dropout(0.25))
+
 # 输出层
 model.add(Dense(10, activation='softmax'))
+
 model.summary()
+
+# 编译模型
 model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 
+# 数据增强
+datagen = ImageDataGenerator(
+    rotation_range=10,      # 随机旋转 ±10 度
+    width_shift_range=0.1,  # 随机水平平移 ±10%
+    height_shift_range=0.1, # 随机垂直平移 ±10%
+    zoom_range=0.1          # 随机缩放 ±10%
+)
+datagen.fit(x_train)
 
-model.fit(x_train, y_train, batch_size=batch_size,epochs=epochs,verbose=1,validation_data=(x_test, y_test))
+# 早停回调
+early_stopping = EarlyStopping(
+    monitor='val_accuracy', # 监控验证集准确率
+    patience=5,             # 如果连续5个epoch没有提升则停止
+    verbose=1,
+    restore_best_weights=True # 恢复在验证集上表现最好的权重
+)
+
+# 训练模型
+model.fit(datagen.flow(x_train, y_train, batch_size=batch_size),
+          epochs=epochs,
+          verbose=1,
+          validation_data=(x_test, y_test),
+          callbacks=[early_stopping], # 加入早停回调
+          steps_per_epoch=len(x_train) // batch_size # 因为使用了 datagen.flow
+         )
+
 score = model.evaluate(x_test, y_test, verbose=0)
 print('Test loss:', score[0])
 print('Test accuracy:', score[1])
@@ -74,3 +132,4 @@ with open('model.json', 'w') as outfile:
     
 model_file = 'model.h5'
 model.save(model_file)
+print(f"模型已保存到 {model_file} 和 model.json")

@@ -246,23 +246,20 @@ class ImageRecognizerApp:
                         digit_roi_cv = image_for_noise_filtering[y:y+h, x:x+w]
                         cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M6_cropped_roi_digit{digit_index}_b{blockSize}_c{C_val}_T{max_noise_area_threshold}.png"), digit_roi_cv)
                         
-                        # M6a: 对裁剪出的ROI进行开运算清理 (使用(3,3)核，同用户当前单数字逻辑的6a)
-                        cleaned_digit_roi_cv = digit_roi_cv # 默认值，以防ROI为空
-                        if digit_roi_cv.size > 0 and digit_roi_cv.ndim == 2:
-                            kernel_roi_open_size = (3,3) 
-                            kernel_for_roi_opening = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_roi_open_size)
-                            cleaned_digit_roi_cv = cv2.morphologyEx(digit_roi_cv, cv2.MORPH_OPEN, kernel_for_roi_opening, iterations=1)
-                            cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M6a_roi_opened_digit{digit_index}_k{kernel_roi_open_size[0]}_T{max_noise_area_threshold}.png"), cleaned_digit_roi_cv)
-                        else:
-                            print(f"警告: 数字 {digit_index} 的裁剪ROI为空或格式不正确，跳过ROI开运算。 ROI shape: {digit_roi_cv.shape}")
-                            # 如果ROI有问题，后续步骤使用原始ROI或可能出错，这里简单跳过此数字的进一步处理
+                        # M6a步骤已被用户要求取消
+                        # 原M6a: 对裁剪出的ROI进行开运算清理 (使用(3,3)核)
+                        cleaned_digit_roi_cv = digit_roi_cv # 直接使用M6裁剪的ROI作为cleaned_digit_roi_cv
+                        
+                        # 原先的M6a的else条件和空ROI检查仍然有用，但现在是针对digit_roi_cv
+                        if not (digit_roi_cv.size > 0 and digit_roi_cv.ndim == 2):
+                            print(f"警告: 数字 {digit_index} 的裁剪ROI (M6的输出) 为空或格式不正确。 ROI shape: {digit_roi_cv.shape}")
                             if digit_roi_cv.size == 0: 
                                 print(f"数字 {digit_index} ROI为空，无法处理，跳过。")
                                 digit_index +=1
                                 continue
+                            # 如果格式不正确但非空，后续步骤可能会出错，但流程会继续，cleaned_digit_roi_cv 保持为 digit_roi_cv
 
-
-                        # M7: 缩放ROI (同用户当前单数字逻辑的7)
+                        # M7: 缩放ROI (现在输入是 cleaned_digit_roi_cv，即M6的输出)
                         padding = 4 
                         max_content_dim = IMAGE_SIZE - 2 * padding
                         roi_h, roi_w = cleaned_digit_roi_cv.shape[:2]
@@ -282,8 +279,12 @@ class ImageRecognizerApp:
                         new_w_roi = max(1, new_w_roi) # 确保尺寸至少为1
                         new_h_roi = max(1, new_h_roi) # 确保尺寸至少为1
 
-                        scaled_digit_roi_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_NEAREST)
-                        cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M7_scaled_roi_digit{digit_index}_INTER_NEAREST_T{max_noise_area_threshold}.png"), scaled_digit_roi_cv)
+                        # 使用 INTER_AREA 进行缩放，这可能会产生灰度图像
+                        scaled_digit_roi_gray_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_AREA)
+                        # 将缩放后的灰度图像重新二值化，以保持线条的清晰和二值特性
+                        _, scaled_digit_roi_cv = cv2.threshold(scaled_digit_roi_gray_cv, 127, 255, cv2.THRESH_BINARY)
+                        
+                        cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"M7_scaled_roi_digit{digit_index}_INTER_AREA_thresh127_T{max_noise_area_threshold}.png"), scaled_digit_roi_cv)
                         
                         # M9: 准备模型输入 (同用户当前单数字逻辑的9)
                         paste_x = (IMAGE_SIZE - new_w_roi) // 2

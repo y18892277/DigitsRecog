@@ -69,9 +69,10 @@
 4.  **循环处理每个候选数字**: 对于列表中的每一个候选数字轮廓 (`contour_item`，索引为 `digitN`)，独立执行以下子处理流程 (基于步骤10的输出 `image_for_noise_filtering`)：
     *   `final_mnist_like_image_np`: 为当前数字创建一个新的空白28x28 NumPy数组（黑色背景）。
     *   `M6_cropped_roi_digitN_bX_cX_TX.png`: **(裁剪)** 从 `image_for_noise_filtering` (步骤10的输出)中裁剪ROI。
-    *   `M6a_roi_opened_digitN_k3_TX.png`: **(ROI清理)** 对裁剪出的 `digit_roi_cv` 应用一次(3,3)核的形态学**开运算**，以清除可能附着在数字笔画上的微小噪点或连接。
-    *   `M7_scaled_roi_digitN_INTER_NEAREST_TX.png`: **(缩放)** 将清理后的 `cleaned_digit_roi_cv` 在保持宽高比的前提下，缩放到适合放置在28x28画布内部的尺寸（通常是20x20左右，四周留白 `padding=4`）。缩放时使用**最近邻插值 (`cv2.INTER_NEAREST`)** 以保持二值图像的清晰度。
-    *   `M9_final_for_model_digitN_TX.png`: **(最终模型输入准备)** 将缩放后的 `scaled_digit_roi_cv` 放置到之前创建的28x28黑色背景 `final_mnist_like_image_np` 的中央。像素值归一化到0-1范围。
+    *   `M7_scaled_roi_digitN_INTER_AREA_thresh127_TX.png`: **(缩放与二值化)** 
+        1.  将步骤M6裁剪出的ROI (`cleaned_digit_roi_cv`) 使用 `cv2.INTER_AREA` 插值方法缩放到适合放置在28x28画布内部的尺寸（通常是20x20左右，四周留白 `padding=4`）。`cv2.INTER_AREA` 在缩小时能较好地保留线条信息，但可能产生灰度值。
+        2.  对缩放后的图像进行阈值处理 (`cv2.threshold`，阈值127)，将其重新转换为清晰的二值图像（黑白）。
+    *   `M9_final_for_model_digitN_TX.png`: **(最终模型输入准备)** 将步骤M7处理后的二值化 `scaled_digit_roi_cv` 放置到之前创建的28x28黑色背景 `final_mnist_like_image_np` 的中央。像素值归一化到0-1范围。
     *   **预测**: 将这个28x28的 `final_mnist_like_image_np` 数组调整形状后送入加载的 `model.h5` 模型进行预测，得到该候选数字的识别结果。
 5.  **结果汇总**: 将所有独立识别出的数字（字符串形式）按顺序连接起来，形成最终的识别序列，显示在GUI右下方的结果区域。
 
@@ -91,11 +92,12 @@
 *   **形态学操作核大小**:
     *   步骤5a (闭运算): 默认 (3,3) (现在是流程中的步骤8)
     *   步骤5b (开运算): 默认 (2,2) (现在是流程中的步骤9)
-    *   步骤M6a (ROI开运算): 默认 (3,3)
+    *   **`kernel_size_morph_close_after_adaptive_thresh` (元组, 默认: `(3,3)`)**: 步骤5a中闭运算的核大小。
+    *   **`kernel_size_morph_open_after_close` (元组, 默认: `(2,2)`)**: 步骤5b中开运算的核大小。
 *   **`max_white_noise_area_after_4` (步骤4b新增的面积阈值，默认 5)**: 用于移除自适应阈值化后（步骤4）的微小白色噪点。如果设得太高，可能会损伤数字的细小部分。
 *   **`max_noise_area_threshold` (步骤5c的面积阈值，默认 20)**: (现在是流程中的步骤10) 用于移除在形态学操作后（步骤9）仍然存在的噪点轮廓。
 *   **`min_digit_area` (多数字识别中候选轮廓的最小面积，默认 25)**: 用于筛选有效的数字轮廓。如果数字本身很小或者预处理后变得很小，可能需要降低此值。
-*   **ROI缩放时的 `padding` (默认 4)**: 缩放后的数字内容距离28x28画布边缘的距离。
+*   **`padding_for_model_input` (整数, 默认: `4`)**: 在将缩放后的ROI（步骤M7）粘贴到28x28图像（步骤M8）时，内容区域周围的黑色边框宽度。
 
 **重要注意事项**:
 
