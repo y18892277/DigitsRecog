@@ -242,29 +242,13 @@ class ImageRecognizerApp:
                     new_w_roi = max(1, new_w_roi)
                     new_h_roi = max(1, new_h_roi)
 
-                    scaled_digit_roi_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_LINEAR) # 使用清理后的ROI进行缩放
-                    cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7_scaled_roi_b{blockSize}_c{C_val}_INTER_LINEAR.png"), scaled_digit_roi_cv)
-
-                    # 新增：对缩放后的ROI进行闭运算，以修补可能的断裂
-                    # scaled_digit_roi_cv 通常是 0-255 的灰度图，但其内容主要是二值的
-                    # 为了确保形态学操作效果，可以先将其转为严格的二值图像 (0 或 255)
-                    # 不过，如果其已经是近似二值（例如，背景是0，前景是255），直接操作通常也可以
-                    # 这里我们假设它可以直接用于形态学操作，如果效果不佳，再考虑强制二值化
-                    repair_kernel_size = (2,2) # 使用较小的核进行修补
-                    kernel_for_repair = cv2.getStructuringElement(cv2.MORPH_RECT, repair_kernel_size)
-                    
-                    # 确保 scaled_digit_roi_cv 不为空且为2D图像
-                    if scaled_digit_roi_cv.size > 0 and scaled_digit_roi_cv.ndim == 2:
-                        repaired_scaled_roi_cv = cv2.morphologyEx(scaled_digit_roi_cv, cv2.MORPH_CLOSE, kernel_for_repair, iterations=1)
-                        cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7a_repaired_scaled_roi_b{blockSize}_c{C_val}_k{repair_kernel_size[0]}.png"), repaired_scaled_roi_cv)
-                    else:
-                        print(f"警告: 缩放后的ROI为空或格式不正确，跳过ROI修复。ROI shape: {scaled_digit_roi_cv.shape}")
-                        repaired_scaled_roi_cv = scaled_digit_roi_cv # 如果有问题，则使用原始缩放ROI
+                    scaled_digit_roi_cv = cv2.resize(cleaned_digit_roi_cv, (new_w_roi, new_h_roi), interpolation=cv2.INTER_NEAREST) # 使用清理后的ROI进行缩放
+                    cv2.imwrite(os.path.join(DEBUG_IMAGE_DIR, f"7_scaled_roi_b{blockSize}_c{C_val}_INTER_NEAREST.png"), scaled_digit_roi_cv)
 
                     paste_x = (IMAGE_SIZE - new_w_roi) // 2
                     paste_y = (IMAGE_SIZE - new_h_roi) // 2
                     
-                    final_mnist_like_image_np[paste_y : paste_y + new_h_roi, paste_x : paste_x + new_w_roi] = repaired_scaled_roi_cv / 255.0 # 使用修复后的ROI
+                    final_mnist_like_image_np[paste_y : paste_y + new_h_roi, paste_x : paste_x + new_w_roi] = scaled_digit_roi_cv / 255.0 # 直接使用缩放后的ROI，不再使用修复后的ROI
             else:
                 print("警告: OpenCV未能找到任何轮廓。")
 
